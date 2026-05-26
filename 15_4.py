@@ -69,18 +69,36 @@ class PolicyValueNet(nn.Module):
 
 # [프로그램 15-3] PUCT 기반 MCTS 구현하기
 
-#노드 구조
+# 노드 구조
 class Node:
     def __init__(self, state, player):
         self.state = state
         self.player = player
         self.children = {}
-        self.N = 0    # 방문 횟수
-        self.W = 0    # 누적 가치
-        self.Q = 0    # 평균 가치
-        self.P = None # 사전 확률
+        self.N = 0       # 방문 횟수
+        self.W = 0.0     # 누적 가치
+        self.Q = 0.0     # 평균 가치
+        self.P = 0.0     # 사전 확률
 
-#선택 단계: PUCT 규칙 적용
+
+# 특정 보드 상태에서 승리 여부 확인
+def check_win_state(board, player):
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if c + WIN_COND <= BOARD_SIZE and all(board[r, c+i] == player for i in range(WIN_COND)):
+                return True
+            if r + WIN_COND <= BOARD_SIZE and all(board[r+i, c] == player for i in range(WIN_COND)):
+                return True
+            if r + WIN_COND <= BOARD_SIZE and c + WIN_COND <= BOARD_SIZE and \
+               all(board[r+i, c+i] == player for i in range(WIN_COND)):
+                return True
+            if r + WIN_COND <= BOARD_SIZE and c - WIN_COND >= -1 and \
+               all(board[r+i, c-i] == player for i in range(WIN_COND)):
+                return True
+    return False
+
+
+# 선택 단계: PUCT 규칙 적용
 def select_child(node, c_puct=1.0):
     best_score = -1e9
     best_action, best_child = None, None
@@ -88,28 +106,63 @@ def select_child(node, c_puct=1.0):
     for action, child in node.children.items():
         U = c_puct * child.P * np.sqrt(node.N + 1) / (child.N + 1)
         score = child.Q + U
+
         if score > best_score:
-            best_score, best_child, best_action = score, child, action
+            best_score = score
+            best_action = action
+            best_child = child
 
     return best_action, best_child
 
-#확장 및 평가 단계
+
+# 확장 및 평가 단계
 def expand_and_evaluate(node, model):
+    # 이미 끝난 상태라면 실제 게임 결과를 반환
+    if check_win_state(node.state, -node.player):
+        return -1.0
+
+    valid_actions = [
+        (r, c)
+        for r in range(BOARD_SIZE)
+        for c in range(BOARD_SIZE)
+        if node.state[r, c] == 0
+    ]
+
+    # 둘 곳이 없으면 무승부
+    if len(valid_actions) == 0:
+        return 0.0
+
     state_tensor = torch.tensor(node.state, dtype=torch.float32).unsqueeze(0)
-    policy_logits, value = model(state_tensor)
+
+    with torch.no_grad():
+        policy_logits, value = model(state_tensor)
 
     policy = torch.softmax(policy_logits, dim=-1).detach().cpu().numpy().flatten()
-    actions = [(r, c) for r in range(BOARD_SIZE) for c in range(BOARD_SIZE)]
-    total_valid = sum(node.state[r, c] == 0 for r in range(BOARD_SIZE) for c in range(BOARD_SIZE))
 
-    for idx, action in enumerate(actions):
-        if node.state[action[0], action[1]] == 0:
-            node.children[action] = Node(node.state.copy(), -node.player)
-            node.children[action].P = policy[idx] / max(total_valid, 1)
+    # 가능한 행동에 해당하는 확률만 추출
+    valid_indices = [r * BOARD_SIZE + c for r, c in valid_actions]
+    valid_probs = policy[valid_indices]
+
+    # 불가능한 위치를 제거한 뒤 다시 정규화
+    prob_sum = valid_probs.sum()
+    if prob_sum <= 0:
+        valid_probs = np.ones(len(valid_actions)) / len(valid_actions)
+    else:
+        valid_probs = valid_probs / prob_sum
+
+    # 자식 노드 생성: 반드시 action을 적용한 다음 상태를 만든다
+    for action, p in zip(valid_actions, valid_probs):
+        child_state = node.state.copy()
+        child_state[action[0], action[1]] = node.player
+
+        child = Node(child_state, -node.player)
+        child.P = float(p)
+        node.children[action] = child
 
     return float(value.item())
 
-#역전파 단계
+
+# 역전파 단계
 def backpropagate(path, value):
     for node in reversed(path):
         node.N += 1
@@ -117,7 +170,8 @@ def backpropagate(path, value):
         node.Q = node.W / node.N
         value = -value
 
-#전체 MCTS 실행:
+
+# 전체 MCTS 실행
 def mcts_search(root, model, n_sim=50):
     for _ in range(n_sim):
         node = root
@@ -130,9 +184,17 @@ def mcts_search(root, model, n_sim=50):
         value = expand_and_evaluate(node, model)
         backpropagate(path, value)
 
+    if not root.children:
+        return [], np.array([])
+
     actions, visits = zip(*[(a, child.N) for a, child in root.children.items()])
     visits = np.array(visits, dtype=float)
-    probs = visits / visits.sum()
+
+    if visits.sum() == 0:
+        probs = np.ones_like(visits) / len(visits)
+    else:
+        probs = visits / visits.sum()
+
     return actions, probs
 
 # [프로그램 15-4-1] AI vs AI 자동 플레이 구현하기 
