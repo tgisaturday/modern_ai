@@ -13,7 +13,7 @@ personal_docs = [
 ]
 
 # [프로그램 16-3] LlamaIndex 기반 RAG 구성하기
-from llama_index.core import VectorStoreIndex, Document, SimpleDirectoryReader
+from llama_index.core import VectorStoreIndex, Document
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 # 임베딩 모델 선택
