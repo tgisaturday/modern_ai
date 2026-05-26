@@ -4,24 +4,34 @@
 #             llama-index-embeddings-huggingface \
 #            transformers sentencepiece accelerate datasets \
 #             sounddevice soundfile openai-whisper gtts
-
+#!pip install pydub
+#!apt-get -qq install -y ffmpeg
 
 # [프로그램 17-2] 모델 초기화 및 API 엔드 포인트 구현하기
 # 코드 실행시 "api_server.py" 파일이 생성된다.
 api_code = """
-# api_server.py
 import os
+
 import uuid
+
 import tempfile
 
 import whisper
+
 import torch
+
 from gtts import gTTS
+
+from pydub import AudioSegment
+
 from fastapi import FastAPI, UploadFile, HTTPException
+
 from fastapi.responses import FileResponse
 
 from llama_index.core import VectorStoreIndex, Document
+
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -29,86 +39,171 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 app = FastAPI()
 
 @app.get("/health")
+
 def health_check():
+
     return {"status": "ok"}
 
 # Whisper ASR
+
 asr_model = whisper.load_model("small")
 
 # RAG
+
 personal_docs = [
+
     "사용자는 게임 오목을 좋아하며 주로 5x5 미니게임을 즐긴다.",
+
     "사용자는 커피보다 차(茶)를 선호한다.",
+
     "사용자는 매일 6시에 헬스장을 간다.",
+
     "사용자는 최근 AI 관련 대학원 프로젝트를 진행하고 있다.",
+
 ]
+
 embed_model = HuggingFaceEmbedding("sentence-transformers/all-MiniLM-L6-v2")
+
 docs = [Document(text=d) for d in personal_docs]
+
 rag_index = VectorStoreIndex.from_documents(docs, embed_model=embed_model)
+
 rag_engine = rag_index.as_retriever(similarity_top_k=3)
 
 # LLM
+
 llm_name = "Qwen/Qwen2.5-1.5B-Instruct"
+
 tokenizer = AutoTokenizer.from_pretrained(llm_name)
+
 llm = AutoModelForCausalLM.from_pretrained(llm_name).to(device)
 
+llm.eval()
+
 OUTPUT_DIR = "./outputs"
+
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+def convert_to_wav(src_path: str) -> str:
+
+    wav_path = src_path + ".wav"
+
+    audio = AudioSegment.from_file(src_path)
+
+    audio = audio.set_channels(1).set_frame_rate(16000)
+
+    audio.export(wav_path, format="wav")
+
+    return wav_path
+
 def transcribe(path: str) -> str:
+
     result = asr_model.transcribe(path, fp16=False)
+
     return result["text"]
 
 def rag_answer(query: str) -> str:
+
     nodes = rag_engine.retrieve(query)
+
     ctx = "\n".join([n.node.get_content() for n in nodes])
+
     prompt = (
+
         "문맥: " + ctx + "\n"
+
         "사용자 질문: " + query + "\n"
-        "문맥과 질문의 관계를 해석하여 간결하고 정확하게 응답하라.\n"
+
+        "문맥을 고려하여 적절한 응답을 제공하라.\n"
+
         "답변:"
+
     )
+
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
-    outputs = llm.generate(**inputs, max_new_tokens=128)
-    return tokenizer.decode(outputs[0], skip_special_tokens=True).split("답변:")[-1]
+
+    with torch.no_grad():
+
+        outputs = llm.generate(**inputs, max_new_tokens=128)
+
+    return tokenizer.decode(outputs[0], skip_special_tokens=True).split("답변:")[-1].strip()
 
 def synthesize(text: str) -> str:
+
     out_path = os.path.join(OUTPUT_DIR, f"{uuid.uuid4().hex}.mp3")
+
     tts = gTTS(text=text, lang="ko")
+
     tts.save(out_path)
+
     return out_path
 
 def run_voice_pipeline(audio_path: str):
+
     query_text = transcribe(audio_path)
+
     answer_text = rag_answer(query_text)
+
     out_path = synthesize(answer_text)
+
     return query_text, answer_text, out_path
 
 @app.post("/voice")
+
 async def voice_assistant(audio: UploadFile):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+
+    suffix = os.path.splitext(audio.filename or "")[-1] or ".tmp"
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+
         tmp.write(await audio.read())
+
         tmp_path = tmp.name
 
+    wav_path = None
+
     try:
-        query_text, answer_text, out_path = run_voice_pipeline(tmp_path)
+
+        wav_path = convert_to_wav(tmp_path)
+
+        query_text, answer_text, out_path = run_voice_pipeline(wav_path)
+
         return {
+
             "query": query_text,
+
             "answer": answer_text,
+
             "audio_file": out_path
+
         }
+
     finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+
+        for path in [tmp_path, wav_path]:
+
+            if path and os.path.exists(path):
+
+                try:
+
+                    os.remove(path)
+
+                except OSError:
+
+                    pass
 
 @app.get("/audio")
+
 def get_audio(path: str):
+
     if not path.endswith(".mp3"):
+
         raise HTTPException(status_code=400, detail="mp3 only")
+
     if not os.path.exists(path):
+
         raise HTTPException(status_code=404, detail="file not found")
+
     return FileResponse(path, media_type="audio/mpeg", filename="response.mp3")
 """
 

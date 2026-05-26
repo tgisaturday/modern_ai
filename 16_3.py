@@ -46,6 +46,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 llm_name = "Qwen/Qwen2.5-1.5B-Instruct"  # 예시 소형 LLM
 tokenizer = AutoTokenizer.from_pretrained(llm_name)
 llm = AutoModelForCausalLM.from_pretrained(llm_name).to(device)
+llm.eval()
 
 def generate_llm_answer(query, context):
     prompt = (
