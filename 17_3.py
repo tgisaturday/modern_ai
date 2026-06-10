@@ -174,7 +174,7 @@ async def voice_assistant(audio: UploadFile):
 
             "answer": answer_text,
 
-            "audio_file": out_path
+            "audio_url": f"/audio/{os.path.basename(out_path)}"
 
         }
 
@@ -192,19 +192,21 @@ async def voice_assistant(audio: UploadFile):
 
                     pass
 
-@app.get("/audio")
-
-def get_audio(path: str):
-
-    if not path.endswith(".mp3"):
-
+@app.get("/audio/{file_id}")
+def get_audio(file_id: str):
+    safe_name = os.path.basename(file_id)
+    path = os.path.abspath(os.path.join(OUTPUT_DIR, safe_name))
+    output_root = os.path.abspath(OUTPUT_DIR)
+    
+    if not path.startswith(output_root + os.sep):
+        raise HTTPException(status_code=400, detail="invalid path")
+    if not safe_name.endswith(".mp3"):
         raise HTTPException(status_code=400, detail="mp3 only")
-
     if not os.path.exists(path):
-
         raise HTTPException(status_code=404, detail="file not found")
 
     return FileResponse(path, media_type="audio/mpeg", filename="response.mp3")
+
 """
 
 with open("api_server.py", "w") as f:
@@ -217,10 +219,14 @@ with open("api_server.py", "w") as f:
 #코드 실행시 "demo_ui.py" 파일이 생성된다.
 ui_code = """
 # demo_ui.py
+import os
+import tempfile
+
 import gradio as gr
 import requests
 
-API_URL = "http://127.0.0.1:8000/voice"
+API_BASE_URL = "http://127.0.0.1:8000"
+API_URL = f"{API_BASE_URL}/voice"
 
 def call_api(audio_path):
     if audio_path is None:
@@ -233,10 +239,21 @@ def call_api(audio_path):
     r.raise_for_status()
     data = r.json()
 
+    audio_url = data.get("audio_url")
+    local_audio_path = None
+
+    if audio_url:
+        audio_response = requests.get(f"{API_BASE_URL}{audio_url}", timeout=600)
+        audio_response.raise_for_status()
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+            tmp.write(audio_response.content)
+            local_audio_path = tmp.name
+
     return (
         data.get("query", ""),
         data.get("answer", ""),
-        data.get("audio_file", None)
+        local_audio_path
     )
 
 with gr.Blocks() as demo:
