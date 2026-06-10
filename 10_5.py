@@ -59,7 +59,14 @@ for epoch in range(3):
         attention_mask = torch.tensor(batch["attention_mask"]).unsqueeze(0).to(device)
 
         optimizer.zero_grad()
-        outputs = lora_model(inputs, attention_mask=attention_mask, labels=inputs)
+        labels = inputs.clone()
+        labels[attention_mask == 0] = -100
+
+        outputs = lora_model(
+            input_ids=inputs,
+            attention_mask=attention_mask,
+            labels=labels
+        )
         loss = outputs.loss
         loss.backward()
         optimizer.step()
